@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Enhanced Traceroute + Simulated Annealing Script with CSV Export, Graph Plotting, Detailed Logging
+Traceroute + Simulated Annealing script nâng cao + xuất file CSV, vẽ đồ thị, ghi log
 
-Chuc nang:
+Các chức năng:
 - Chay tracert/traceroute nhieu lan de tong hop du lieu latency
-- Builds a weighted directed graph (average latency per edge)
-- Simulated Annealing to find minimal-latency path
-- CSV export of edge statistics & optimal path (using csv module)
-- Plotting network graph with optimal path highlighted
-- Detailed logging
+- Xây dựng đồ thị có hướng trọng số (độ trễ trung bình trên từng cạnh)
+- Dùng giải thuật SA để tìm đường dẫn có độ trễ thấp nhất
+- Lưu số liệu vào file CSV bao gồm thống kê các cạnh và đường dẫn tối ưu (sd module CSV)
+- Vẽ đồ thị mạng với đường dẫn tối ưu
+- Ghi log chi tiết
 
-Usage:
+Cách sử dụng:
   python enhanced_traceroute_sa.py TARGET [--runs R] [--max-ttl T] [--timeout S] [--sa-* options] [--csv-dir DIR] [--no-plot]
 
-Requires: scapy, networkx, matplotlib
+Yêu cầu: scapy, networkx, matplotlib
 Run on Windows as Administrator.
 """
 import time
@@ -25,22 +25,22 @@ import csv
 import socket
 from pathlib import Path
 
-# Scapy imports and suppress ARP warnings
+# import scapy, bypass cảnh báo ARP (ko tìm được MAC của gateway nên sẽ broadcast tràn lan)
 from scapy.all import IP, ICMP, sr1
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
 import networkx as nx
 import matplotlib.pyplot as plt
 
-# Configure main logging
+# Cấu hình log
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-
-def traceroute_scapy(dst_ip, max_ttl=30, timeout=2.0):
+# chạy tracert bằng scapy
+def traceroute_scapy(dst_ip, max_ttl=30, timeout=2.0): # mặc định max ttl = 30; timeout = 2s
     logging.info(f"Traceroute to {dst_ip}: max_ttl={max_ttl}, timeout={timeout}s")
     path = []
     for ttl in range(1, max_ttl+1):
@@ -60,20 +60,32 @@ def traceroute_scapy(dst_ip, max_ttl=30, timeout=2.0):
             path.append((None, None))
     return path
 
-
+# hàm tổng hợp dữ liệu bằng cách chạy tracert nhiều lần
 def aggregate_paths(runs, dst_ip, max_ttl, timeout):
     edge_data = {}
     for i in range(runs):
         logging.info(f"Run {i+1}/{runs}")
         path = traceroute_scapy(dst_ip, max_ttl, timeout)
+        logging.debug(f"Traceroute path: {[hop for hop, _ in path]}")
         prev = None
+        last_valid_hop = None
         for hop, rtt in path:
-            if prev and hop and rtt is not None:
-                edge_data.setdefault((prev, hop), []).append(rtt)
-            prev = hop
+            if hop and rtt is not None:
+                if prev:
+                    edge_data.setdefault((prev, hop), []).append(rtt)
+                prev = hop
+                last_valid_hop = hop
+            elif hop is not None:
+                prev = hop  # Hop có IP nhưng không đo RTT
+        # Nếu không tới được đích, thêm thủ công cạnh từ hop cuối đến dst_ip
+        if dst_ip not in [hop for hop, _ in path if hop]:
+            if last_valid_hop and last_valid_hop != dst_ip:
+                logging.warning(f"Destination {dst_ip} not reached. Adding synthetic edge from {last_valid_hop}.")
+                edge_data.setdefault((last_valid_hop, dst_ip), []).append(timeout * 1000)
     return edge_data
 
 
+# tạo graph
 def build_graph(edge_data):
     G = nx.DiGraph()
     for (u, v), rtts in edge_data.items():
@@ -82,11 +94,11 @@ def build_graph(edge_data):
         logging.debug(f"Edge {u}->{v}: avg={avg:.2f}ms over {len(rtts)} runs")
     return G
 
-
+# tính tổng độ trễ của path
 def cost(path, G):
     return sum(G[u][v]['weight'] for u, v in zip(path, path[1:]))
 
-
+# tạo đường đi ban đầu giữa src và dst
 def get_initial_path(G, src, dst, cutoff=30):
     try:
         path = nx.shortest_path(G, src, dst, weight='weight')
@@ -100,7 +112,7 @@ def get_initial_path(G, src, dst, cutoff=30):
         logging.info(f"Initial random path: {path}, cost={cost(path, G):.2f}ms")
         return path
 
-
+# tạo hàng xóm lân cận của path bằng cách hoán đổi 2 node trong đường đi, giữ nguyên src và dst
 def neighbor(path, G):
     if len(path) <= 3:
         return path
@@ -111,7 +123,7 @@ def neighbor(path, G):
         return new
     return path
 
-
+# thuật toán chính
 def simulated_annealing(G, src, dst, T0, T_min, alpha, N):
     current = get_initial_path(G, src, dst)
     best = current
@@ -131,7 +143,7 @@ def simulated_annealing(G, src, dst, T0, T_min, alpha, N):
     logging.info(f"SA done: iterations={it}, best cost={cost(best, G):.2f}ms")
     return best
 
-
+# lưu vào csv
 def export_to_csv(edge_data, best, outdir):
     od = Path(outdir)
     od.mkdir(exist_ok=True)
@@ -151,7 +163,7 @@ def export_to_csv(edge_data, best, outdir):
             writer.writerow([idx, node])
     logging.info(f"Exported best_path.csv to {path_file}")
 
-
+# vẽ đồ thị
 def plot_graph(G, best):
     pos = nx.spring_layout(G)
     plt.figure(figsize=(10, 8))
@@ -161,7 +173,7 @@ def plot_graph(G, best):
     plt.title('Network Graph: Optimal Path')
     plt.show()
 
-
+# hàm thiết lập các flag thêm tham số cho script
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('target', help='Destination hostname or IP')
@@ -176,7 +188,7 @@ def main():
     parser.add_argument('--no-plot', action='store_true', help='Disable graph plotting')
     args = parser.parse_args()
 
-    # Resolve target to IP
+    # Phân giải mục tiêu (có thể là tên miền hoặc IP) thành IP
     try:
         dst_ip = socket.gethostbyname(args.target)
         logging.info(f"Resolved {args.target} to {dst_ip}")
@@ -184,7 +196,7 @@ def main():
         logging.error(f"Unable to resolve {args.target}")
         return
 
-    # Aggregate traceroute data
+    # tổng hợp dữ liệu từ tracert
     edge_data = aggregate_paths(args.runs, dst_ip, args.max_ttl, args.timeout)
     G = build_graph(edge_data)
     logging.info(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
@@ -196,13 +208,15 @@ def main():
         logging.error(f"Destination {dst} not in graph nodes. Exiting.")
         return
 
-    # Run Simulated Annealing
+    # chạy thuật toán Simulated Annealing
     best_path = simulated_annealing(G, src, dst, args.sa_t0, args.sa_tmin, args.sa_alpha, args.sa_n)
 
-    # Export and plot
+    # Xuất file csv và vẽ đồ thị
     export_to_csv(edge_data, best_path, args.csv_dir)
     if not args.no_plot:
         plot_graph(G, best_path)
 
 if __name__ == '__main__':
     main()
+    
+
