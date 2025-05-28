@@ -98,18 +98,18 @@ def build_graph(edge_data):
 def cost(path, G):
     return sum(G[u][v]['weight'] for u, v in zip(path, path[1:]))
 
-# tạo đường đi ban đầu giữa src và dst
+# tạo đường đi ban đầu giữa src và dst bằng Dijkstra
 def get_initial_path(G, src, dst, cutoff=30):
     try:
-        path = nx.shortest_path(G, src, dst, weight='weight')
+        path = nx.shortest_path(G, src, dst, weight='weight') #dijkstra
         logging.info(f"Initial Dijkstra path: {path}, cost={cost(path, G):.2f}ms")
         return path
-    except nx.NetworkXNoPath:
-        paths = list(nx.all_simple_paths(G, src, dst, cutoff=cutoff))
+    except nx.NetworkXNoPath: # nếu dijkstra không tìm được
+        paths = list(nx.all_simple_paths(G, src, dst, cutoff=cutoff)) #fallback, chọn ngâu nhiên trong các đường đi đơn giản (khi đồ thị không liên thông về trọng số)
         if not paths:
             raise ValueError(f"No path from {src} to {dst}")
         path = random.choice(paths)
-        logging.info(f"Initial random path: {path}, cost={cost(path, G):.2f}ms")
+        logging.info(f"Initial random path: {path}, cost={cost(path, G):.2f}ms") #chọn ngẫu nhiên và ghi log khi không còn đường đi nào
         return path
 
 # tạo hàng xóm lân cận của path bằng cách hoán đổi 2 node trong đường đi, giữ nguyên src và dst
@@ -164,14 +164,58 @@ def export_to_csv(edge_data, best, outdir):
     logging.info(f"Exported best_path.csv to {path_file}")
 
 # vẽ đồ thị
-def plot_graph(G, best):
-    pos = nx.spring_layout(G)
-    plt.figure(figsize=(10, 8))
-    nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', arrowsize=20)
-    path_edges = list(zip(best, best[1:]))
-    nx.draw_networkx_edges(G, pos, edgelist=path_edges, edge_color='red', width=2)
-    plt.title('Network Graph: Optimal Path')
+
+# def plot_graph(G: nx.DiGraph, path: list[str], use_sa: bool = False):
+#     pos = nx.spring_layout(G, seed=42)
+#     plt.figure(figsize=(12, 8))
+
+#     # Tô màu tất cả các cạnh mặc định (màu sáng/xám)
+#     nx.draw_networkx_edges(G, pos, alpha=0.3)
+
+#     # Tô màu các node
+#     nx.draw_networkx_nodes(G, pos, node_size=500, node_color="skyblue", edgecolors="black")
+
+#     # Label node
+#     nx.draw_networkx_labels(G, pos, font_size=10)
+
+#     # Vẽ đường đi tốt nhất (nếu có)
+#     if path and len(path) >= 2:
+#         path_edges = list(zip(path, path[1:]))
+#         edge_color = 'red' if use_sa else 'gray'
+#         nx.draw_networkx_edges(G, pos, edgelist=path_edges, width=2.5, edge_color=edge_color)
+
+#     plt.title("Traceroute Network Graph" + (" (Simulated Annealing)" if use_sa else " (Initial Path)"))
+#     plt.axis('off')
+#     plt.tight_layout()
+#     plt.show()
+
+def plot_graph(G: nx.DiGraph, path: list[str], use_sa: bool = False):
+    pos = nx.spring_layout(G, seed=42)
+    plt.figure(figsize=(12, 8))
+
+    # Vẽ các cạnh bình thường
+    nx.draw_networkx_edges(G, pos, alpha=0.3)
+
+    # Hiển thị latency trên cạnh (trọng số)
+    edge_labels = nx.get_edge_attributes(G, 'weight')
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=9, label_pos=0.5)
+
+    # Vẽ các nút
+    nx.draw_networkx_nodes(G, pos, node_size=500, node_color="skyblue", edgecolors="black")
+    nx.draw_networkx_labels(G, pos, font_size=10)
+
+    # Vẽ đường đi tối ưu
+    if path and len(path) >= 2:
+        path_edges = list(zip(path, path[1:]))
+        edge_color = 'green' if use_sa else 'red'
+        nx.draw_networkx_edges(G, pos, edgelist=path_edges, width=2.5, edge_color=edge_color)
+
+    plt.title("Traceroute Network Graph" + (" (Simulated Annealing)" if use_sa else " (Dijkstra)"))
+    plt.axis('off')
+    plt.tight_layout()
     plt.show()
+
+
 
 # hàm thiết lập các flag thêm tham số cho script
 def main():
@@ -186,6 +230,9 @@ def main():
     parser.add_argument('--sa-tmin', type=float, default=1e-3, help='SA min temp')
     parser.add_argument('--csv-dir', default='output_csv', help='Directory to save CSV outputs')
     parser.add_argument('--no-plot', action='store_true', help='Disable graph plotting')
+    # thêm flag --SA và --plot để tách biệt lựa chọn sử dụng thuật toán
+    parser.add_argument('--SA', action='store_true', help='Enable Simulated Annealing optimization')
+    # parser.add_argument('--plot', action='store_true', help='Enable graphic plotting (disable by default)')
     args = parser.parse_args()
 
     # Phân giải mục tiêu (có thể là tên miền hoặc IP) thành IP
@@ -208,13 +255,17 @@ def main():
         logging.error(f"Destination {dst} not in graph nodes. Exiting.")
         return
 
-    # chạy thuật toán Simulated Annealing
-    best_path = simulated_annealing(G, src, dst, args.sa_t0, args.sa_tmin, args.sa_alpha, args.sa_n)
+    # chạy thuật toán Simulated Annealing, hoặc không :Đ
+    if args.SA:
+        best_path = simulated_annealing(G, src, dst, args.sa_t0, args.sa_tmin, args.sa_alpha, args.sa_n)
+    else:
+        best_path = get_initial_path(G, src, dst)
+        logging.info(f"Using initial path without SA: {best_path}, cost={cost(best_path, G):.2f}ms") 
 
     # Xuất file csv và vẽ đồ thị
     export_to_csv(edge_data, best_path, args.csv_dir)
     if not args.no_plot:
-        plot_graph(G, best_path)
+        plot_graph(G, best_path, use_sa=args.SA)
 
 if __name__ == '__main__':
     main()
